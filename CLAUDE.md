@@ -29,16 +29,21 @@ modification:
 grep -n "ll-archive-patch" gallery_dl/extractor/twitter.py
 ```
 
-There are currently three patches, in this order:
+There are currently four patches, in this order:
 
 1. **REQ logging** — in `_call`, log `method endpoint cursor variables`
-   before each HTTP request.
+   before each HTTP request. Structured fields attached via
+   `extra={"json": {...}}`.
 2. **RATELIMIT logging** — in `_call`, log `status remaining/limit reset url`
-   after each response. Reads `x-rate-limit-*` headers.
+   after each response. Reads `x-rate-limit-*` headers. Structured.
 3. **max_id loop fix** — in `_update_variables_search_maxid`, track the
    previous `max_id` value and return `None` when it doesn't advance.
    In `_pagination_tweets`, honor `None` from `update_variables` to
    exit cleanly.
+4. **JSON log mode** — in `output.py`, add `JsonFormatter` activated by
+   env var `GALLERY_DL_LOG_JSON=1`. Patches `LoggerAdapter` to merge
+   caller-provided `extra=` instead of overwriting. Filters out the
+   adapter's own `<object at 0x...>` repr fields.
 
 ## Adding or modifying a patch
 
@@ -106,6 +111,12 @@ restructures any of them, expect a rebase conflict:
   but before the regex substitution.
 - `def _pagination_tweets(...)` — the outer pagination loop. Our `None`
   handling goes where `update_variables(...)` is called.
+- `class LoggerAdapter` in `output.py` — `_merge_extra` helper plus
+  changes to `debug/info/warning/error` to call it. If upstream
+  rewrites the adapter, port the merge behavior over.
+- `def initialize_logging(...)` in `output.py` — adds the
+  `GALLERY_DL_LOG_JSON` env-var branch. The `JsonFormatter` class itself
+  sits next to it.
 
 If any of these move/rename, port the change manually using the
 `# ll-archive-patch:` markers as your guide.
@@ -120,7 +131,7 @@ gallery-dl --cookies /path/to/twt.txt -o ratelimit=abort \
   "https://x.com/search?q=from:USERNAME+max_id:9999999999999999999+filter:media&f=live"
 ```
 
-Expected output includes:
+Expected output (default text mode):
 
 ```
 [twitter][info] REQ GET UserByScreenName cursor=None variables=...
@@ -128,6 +139,17 @@ Expected output includes:
 [twitter][info] REQ GET SearchTimeline cursor=None variables=...
 [twitter][info] RATELIMIT status=200 remaining=N/50 reset=... url=SearchTimeline
 ```
+
+JSON mode (the ll-archive Go wrapper sets this automatically):
+
+```bash
+GALLERY_DL_LOG_JSON=1 gallery-dl ... | jq '{event, endpoint, remaining, limit}'
+```
+
+Each stderr line is a JSON object with keys: `time`, `logger`, `level`,
+`message`, plus structured fields for our custom events (`event`:
+`request` / `ratelimit` / `pagination_exhausted`, with relevant typed
+fields like `remaining`, `limit`, `reset`, `endpoint`).
 
 If you see request URLs with full feature flags (urllib3 debug spam)
 but no REQ / RATELIMIT lines, the patches aren't loaded — verify
