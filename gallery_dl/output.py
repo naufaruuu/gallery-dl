@@ -8,6 +8,8 @@
 
 import os
 import sys
+import json
+import time
 import shutil
 import logging
 import unicodedata
@@ -94,24 +96,35 @@ class LoggerAdapter():
             self.logger._log(
                 logging.DEBUG, "", None, exc_info=exc, extra=self.extra)
 
+    def _merge_extra(self, kwargs):
+        # ll-archive-patch: merge caller-provided extra with adapter's extra
+        # (originally this method overwrote, dropping caller's extra={...})
+        caller_extra = kwargs.get("extra")
+        if caller_extra:
+            merged = dict(self.extra)
+            merged.update(caller_extra)
+            kwargs["extra"] = merged
+        else:
+            kwargs["extra"] = self.extra
+
     def debug(self, msg, *args, **kwargs):
         if self.logger.isEnabledFor(logging.DEBUG):
-            kwargs["extra"] = self.extra
+            self._merge_extra(kwargs)
             self.logger._log(logging.DEBUG, msg, args, **kwargs)
 
     def info(self, msg, *args, **kwargs):
         if self.logger.isEnabledFor(logging.INFO):
-            kwargs["extra"] = self.extra
+            self._merge_extra(kwargs)
             self.logger._log(logging.INFO, msg, args, **kwargs)
 
     def warning(self, msg, *args, **kwargs):
         if self.logger.isEnabledFor(logging.WARNING):
-            kwargs["extra"] = self.extra
+            self._merge_extra(kwargs)
             self.logger._log(logging.WARNING, msg, args, **kwargs)
 
     def error(self, msg, *args, **kwargs):
         if self.logger.isEnabledFor(logging.ERROR):
-            kwargs["extra"] = self.extra
+            self._merge_extra(kwargs)
             self.logger._log(logging.ERROR, msg, args, **kwargs)
 
 
@@ -218,6 +231,57 @@ class FileHandler(logging.StreamHandler):
         self.emit(record)
 
 
+# ll-archive-patch: JSON log formatter for structured/parseable output.
+# Activate by setting env var GALLERY_DL_LOG_JSON=1.
+# Custom log calls can attach structured fields via `extra={"json": {...}}`,
+# e.g.   self.log.info("req", extra={"json": {"event": "req", "method": "GET"}})
+# Anything in `extra["json"]` is merged into the top-level JSON object.
+_LOG_RECORD_RESERVED = frozenset((
+    "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+    "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+    "created", "msecs", "relativeCreated", "thread", "threadName",
+    "processName", "process", "taskName", "message", "asctime",
+    # ll-archive: gallery-dl LoggerAdapter attaches these on every record.
+    # Their values are Python repr strings (not useful) so we drop them.
+    "job", "extractor", "path", "keywords",
+))
+
+
+class JsonFormatter(logging.Formatter):
+    """Emit each log record as a single line of JSON."""
+
+    def format(self, record):
+        record.message = record.getMessage()
+        out = {
+            "time": time.strftime(
+                "%Y-%m-%dT%H:%M:%S", time.gmtime(record.created))
+                + f".{int(record.msecs):03d}Z",
+            "logger": record.name,
+            "level": record.levelname,
+            "message": record.message,
+        }
+        # merge structured fields passed via `extra={"json": {...}}`
+        extra_json = getattr(record, "json", None)
+        if isinstance(extra_json, dict):
+            out.update(extra_json)
+        # also merge any other non-reserved attributes (covers extra={"key": v})
+        for k, v in record.__dict__.items():
+            if k in _LOG_RECORD_RESERVED or k == "json" or k.startswith("_"):
+                continue
+            if k not in out:
+                out[k] = v
+        if record.exc_info and not record.exc_text:
+            record.exc_text = self.formatException(record.exc_info)
+        if record.exc_text:
+            out["exc_text"] = record.exc_text
+        try:
+            return json.dumps(out, ensure_ascii=False, default=str)
+        except Exception:
+            # last-resort fallback: stringify the whole thing
+            return json.dumps({"level": record.levelname,
+                               "message": str(record.message)})
+
+
 def initialize_logging(loglevel):
     """Setup basic logging functionality before configfiles have been loaded"""
     # convert levelnames to lowercase
@@ -229,9 +293,12 @@ def initialize_logging(loglevel):
     logging.Logger.manager.setLoggerClass(Logger)
 
     # setup basic logging to stderr
-    formatter = Formatter(LOG_FORMAT, LOG_FORMAT_DATE)
+    if os.environ.get("GALLERY_DL_LOG_JSON"):
+        log_formatter = JsonFormatter()
+    else:
+        log_formatter = Formatter(LOG_FORMAT, LOG_FORMAT_DATE)
     handler = logging.StreamHandler()
-    handler.setFormatter(formatter)
+    handler.setFormatter(log_formatter)
     handler.setLevel(loglevel)
     root = logging.getLogger()
     root.setLevel(logging.NOTSET)

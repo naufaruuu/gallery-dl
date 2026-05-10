@@ -1900,13 +1900,20 @@ class TwitterAPI():
                 else:
                     self._authenticate_guest()
 
-            # ll-archive-patch: log every request
+            # ll-archive-patch: log every request (structured via extra=)
             op = endpoint.rstrip("/").rsplit("/", 1)[-1]
             req_cursor = (params or {}).get("cursor") if isinstance(params, dict) else None
             req_variables = (params or {}).get("variables") if isinstance(params, dict) else None
             self.log.info(
                 "REQ %s %s cursor=%s variables=%s",
-                method, op, req_cursor, req_variables)
+                method, op, req_cursor, req_variables,
+                extra={"json": {
+                    "event": "request",
+                    "method": method,
+                    "endpoint": op,
+                    "cursor": req_cursor,
+                    "variables": req_variables,
+                }})
 
             response = self.extractor.request(
                 url, method=method, params=params,
@@ -1917,13 +1924,23 @@ class TwitterAPI():
                 self.headers["x-csrf-token"] = csrf_token
 
             remaining = int(response.headers.get("x-rate-limit-remaining", 6))
-            # ll-archive-patch: log rate-limit headers
+            # ll-archive-patch: log rate-limit headers (structured via extra=)
             limit = response.headers.get("x-rate-limit-limit", "?")
             reset = response.headers.get("x-rate-limit-reset", "?")
+            rl_endpoint = response.url.split("?")[0].rsplit("/", 1)[-1]
             self.log.info(
                 "RATELIMIT status=%s remaining=%s/%s reset=%s url=%s",
-                response.status_code, remaining, limit, reset,
-                response.url.split("?")[0].rsplit("/", 1)[-1])
+                response.status_code, remaining, limit, reset, rl_endpoint,
+                extra={"json": {
+                    "event": "ratelimit",
+                    "status": response.status_code,
+                    "remaining": remaining,
+                    "limit": (int(limit) if isinstance(limit, str)
+                              and limit.isdigit() else limit),
+                    "reset": (int(reset) if isinstance(reset, str)
+                              and reset.isdigit() else reset),
+                    "endpoint": rl_endpoint,
+                }})
             if remaining < 6 and remaining <= random.randrange(1, 6):
                 self._handle_ratelimit(response)
                 continue
@@ -2462,7 +2479,12 @@ class TwitterAPI():
             if prev == max_id:
                 self.extractor.log.info(
                     "max_id did not advance past %s — exhausted, stopping",
-                    tweet_id)
+                    tweet_id,
+                    extra={"json": {
+                        "event": "pagination_exhausted",
+                        "tweet_id": tweet_id,
+                        "reason": "max_id_did_not_advance",
+                    }})
                 return None
             self._var_maxid_prev = max_id
 
