@@ -1909,10 +1909,10 @@ class TwitterAPI():
                 method, op, req_cursor, req_variables,
                 extra={"json": {
                     "event": "request",
-                    "method": method,
-                    "endpoint": op,
-                    "cursor": req_cursor,
-                    "variables": req_variables,
+                    "request_method": method,
+                    "request_endpoint": op,
+                    "request_cursor": req_cursor,
+                    "request_variables": req_variables,
                 }})
 
             response = self.extractor.request(
@@ -1933,13 +1933,13 @@ class TwitterAPI():
                 response.status_code, remaining, limit, reset, rl_endpoint,
                 extra={"json": {
                     "event": "ratelimit",
-                    "status": response.status_code,
-                    "remaining": remaining,
-                    "limit": (int(limit) if isinstance(limit, str)
-                              and limit.isdigit() else limit),
-                    "reset": (int(reset) if isinstance(reset, str)
-                              and reset.isdigit() else reset),
-                    "endpoint": rl_endpoint,
+                    "ratelimit_status": response.status_code,
+                    "ratelimit_remaining": remaining,
+                    "ratelimit_limit": (int(limit) if isinstance(limit, str)
+                                        and limit.isdigit() else limit),
+                    "ratelimit_reset": (int(reset) if isinstance(reset, str)
+                                        and reset.isdigit() else reset),
+                    "ratelimit_endpoint": rl_endpoint,
                 }})
             if remaining < 6 and remaining <= random.randrange(1, 6):
                 self._handle_ratelimit(response)
@@ -2482,8 +2482,8 @@ class TwitterAPI():
                     tweet_id,
                     extra={"json": {
                         "event": "pagination_exhausted",
-                        "tweet_id": tweet_id,
-                        "reason": "max_id_did_not_advance",
+                        "pagination_tweet_id": tweet_id,
+                        "pagination_reason": "max_id_did_not_advance",
                     }})
                 return None
             self._var_maxid_prev = max_id
