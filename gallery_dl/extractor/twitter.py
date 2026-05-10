@@ -1900,6 +1900,14 @@ class TwitterAPI():
                 else:
                     self._authenticate_guest()
 
+            # ll-archive-patch: log every request
+            op = endpoint.rstrip("/").rsplit("/", 1)[-1]
+            req_cursor = (params or {}).get("cursor") if isinstance(params, dict) else None
+            req_variables = (params or {}).get("variables") if isinstance(params, dict) else None
+            self.log.info(
+                "REQ %s %s cursor=%s variables=%s",
+                method, op, req_cursor, req_variables)
+
             response = self.extractor.request(
                 url, method=method, params=params,
                 headers=self.headers, fatal=None)
@@ -1909,6 +1917,13 @@ class TwitterAPI():
                 self.headers["x-csrf-token"] = csrf_token
 
             remaining = int(response.headers.get("x-rate-limit-remaining", 6))
+            # ll-archive-patch: log rate-limit headers
+            limit = response.headers.get("x-rate-limit-limit", "?")
+            reset = response.headers.get("x-rate-limit-reset", "?")
+            self.log.info(
+                "RATELIMIT status=%s remaining=%s/%s reset=%s url=%s",
+                response.status_code, remaining, limit, reset,
+                response.url.split("?")[0].rsplit("/", 1)[-1])
             if remaining < 6 and remaining <= random.randrange(1, 6):
                 self._handle_ratelimit(response)
                 continue
@@ -2350,7 +2365,11 @@ class TwitterAPI():
             if update_variables is None:
                 variables["cursor"] = extr._update_cursor(cursor)
             else:
-                variables = update_variables(variables, cursor, last_tweet)
+                # ll-archive-patch: allow update_variables to signal exhaustion
+                new_variables = update_variables(variables, cursor, last_tweet)
+                if new_variables is None:
+                    return extr._update_cursor(None)
+                variables = new_variables
 
     def _pagination_users(self, endpoint, variables, path=None):
         extr = self.extractor
@@ -2437,6 +2456,15 @@ class TwitterAPI():
         try:
             tweet_id = tweet.get("id_str") or tweet["legacy"]["id_str"]
             max_id = "max_id:" + str(int(tweet_id)-1)
+
+            # ll-archive-patch: detect non-advancing pagination (boundary tweet loop)
+            prev = getattr(self, "_var_maxid_prev", None)
+            if prev == max_id:
+                self.extractor.log.info(
+                    "max_id did not advance past %s — exhausted, stopping",
+                    tweet_id)
+                return None
+            self._var_maxid_prev = max_id
 
             query, n = text.re(r"\bmax_id:\d+").subn(
                 max_id, variables["rawQuery"])
