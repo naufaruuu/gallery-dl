@@ -11,6 +11,7 @@
 from .common import Extractor, Message, Dispatch
 from .. import text, util, dt
 import itertools
+import json as _json  # ll-archive-patch: used to extract cursor from GraphQL variables
 import random
 
 BASE_PATTERN = (r"(?:https?://)?(?:www\.|mobile\.)?"
@@ -1967,8 +1968,15 @@ class TwitterAPI():
 
             # ll-archive-patch: log every request (structured via extra=)
             op = endpoint.rstrip("/").rsplit("/", 1)[-1]
-            req_cursor = (params or {}).get("cursor") if isinstance(params, dict) else None
             req_variables = (params or {}).get("variables") if isinstance(params, dict) else None
+            # gallery-dl puts cursor inside the JSON-encoded `variables` payload,
+            # not as a top-level param. Parse it out for easier log filtering.
+            req_cursor = None
+            if isinstance(req_variables, str):
+                try:
+                    req_cursor = _json.loads(req_variables).get("cursor")
+                except Exception:
+                    pass
             self.log.info(
                 "REQ %s %s cursor=%s variables=%s",
                 method, op, req_cursor, req_variables,
