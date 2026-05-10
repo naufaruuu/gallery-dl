@@ -29,7 +29,7 @@ modification:
 grep -n "ll-archive-patch" gallery_dl/extractor/twitter.py
 ```
 
-There are currently four patches, in this order:
+There are currently five patches, in this order:
 
 1. **REQ logging** — in `_call`, log `method endpoint cursor variables`
    before each HTTP request. Structured fields attached via
@@ -44,6 +44,16 @@ There are currently four patches, in this order:
    env var `GALLERY_DL_LOG_JSON=1`. Patches `LoggerAdapter` to merge
    caller-provided `extra=` instead of overwriting. Filters out the
    adapter's own `<object at 0x...>` repr fields.
+5. **Phase logging + tighter search filters** — in
+   `TwitterTimelineExtractor.tweets()`, emit `phase_start`/`phase_end`
+   structured logs around each pagination phase, and replace the search
+   filters:
+   - Phase 2 (was `filter:links` → text+link tweets clutter): now uses
+     `filter:media` for denser yield (~30% fewer pages).
+   - Phase 3 (was unfiltered → returned everything including text-only):
+     now uses `filter:links` as a soft fallback. Only fires when phase 2
+     returned zero. Capped by gallery-dl's `search-stop` (default 3
+     consecutive empty pages).
 
 ## Adding or modifying a patch
 
@@ -117,6 +127,10 @@ restructures any of them, expect a rebase conflict:
 - `def initialize_logging(...)` in `output.py` — adds the
   `GALLERY_DL_LOG_JSON` env-var branch. The `JsonFormatter` class itself
   sits next to it.
+- `def tweets(self)` in `TwitterTimelineExtractor` — phase logging plus
+  filter swaps. Anchors: the three `if state <= N:` blocks. Watch for
+  upstream restructuring the state machine or moving the search calls
+  to a helper.
 
 If any of these move/rename, port the change manually using the
 `# ll-archive-patch:` markers as your guide.
@@ -143,13 +157,32 @@ Expected output (default text mode):
 JSON mode (the ll-archive Go wrapper sets this automatically):
 
 ```bash
-GALLERY_DL_LOG_JSON=1 gallery-dl ... | jq '{event, endpoint, remaining, limit}'
+GALLERY_DL_LOG_JSON=1 gallery-dl ... | jq 'select(.event)'
 ```
 
 Each stderr line is a JSON object with keys: `time`, `logger`, `level`,
-`message`, plus structured fields for our custom events (`event`:
-`request` / `ratelimit` / `pagination_exhausted`, with relevant typed
-fields like `remaining`, `limit`, `reset`, `endpoint`).
+`message`, plus structured fields for our custom events:
+
+| `event` | Fields |
+|---|---|
+| `request` | `request_method`, `request_endpoint`, `request_cursor`, `request_variables` |
+| `ratelimit` | `ratelimit_status`, `ratelimit_remaining`, `ratelimit_limit`, `ratelimit_reset`, `ratelimit_endpoint` |
+| `phase_start` | `phase_name`, `phase_max_id` (search phases only), `phase_reason` (fallback only) |
+| `phase_end` | `phase_name`, `phase_tweets_yielded`, `phase_last_tweet_id` (user_media only) |
+| `pagination_exhausted` | `pagination_tweet_id`, `pagination_reason` |
+
+Useful queries:
+
+```bash
+# Per-phase yield breakdown
+jq 'select(.event == "phase_end") | "\(.phase_name): \(.phase_tweets_yielded)"'
+
+# Did phase 3 (filter:links fallback) ever fire?
+jq 'select(.event == "phase_start" and .phase_name == "search_filter_links")'
+
+# Rate-limit pressure on each endpoint
+jq 'select(.event == "ratelimit" and .ratelimit_status == 429)'
+```
 
 If you see request URLs with full feature flags (urllib3 debug spam)
 but no REQ / RATELIMIT lines, the patches aren't loaded — verify

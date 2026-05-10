@@ -927,10 +927,31 @@ class TwitterTimelineExtractor(TwitterExtractor):
         if state <= 1:
             self._cursor_prefix = "1/"
 
+            # ll-archive-patch: phase logging
+            self.log.info(
+                "phase start: user_media",
+                extra={"json": {
+                    "event": "phase_start",
+                    "phase_name": "user_media",
+                }})
+            phase_yield = 0
+
             # yield initial batch of (media) tweets
             tweet = None
             for tweet in self._select_tweet_source()(self.user):
+                phase_yield += 1
                 yield tweet
+
+            self.log.info(
+                "phase end: user_media",
+                extra={"json": {
+                    "event": "phase_end",
+                    "phase_name": "user_media",
+                    "phase_tweets_yielded": phase_yield,
+                    "phase_last_tweet_id":
+                        tweet["rest_id"] if tweet is not None else None,
+                }})
+
             if tweet is None and not cursor:
                 return
             tweet_id = tweet["rest_id"]
@@ -950,22 +971,66 @@ class TwitterTimelineExtractor(TwitterExtractor):
                 self._cursor = self._cursor_prefix
 
             if not self.textonly:
-                # try to search for media-only tweets
+                # ll-archive-patch: phase logging + use filter:media
+                # (denser per-page yield than upstream's filter:links).
+                self.log.info(
+                    "phase start: search_filter_media",
+                    extra={"json": {
+                        "event": "phase_start",
+                        "phase_name": "search_filter_media",
+                        "phase_max_id": tweet_id,
+                    }})
+                phase_yield = 0
+
                 tweet = None
-                for tweet in self.api.search_timeline(query + " filter:links"):
+                for tweet in self.api.search_timeline(
+                        query + " filter:media"):
+                    phase_yield += 1
                     yield tweet
+
+                self.log.info(
+                    "phase end: search_filter_media",
+                    extra={"json": {
+                        "event": "phase_end",
+                        "phase_name": "search_filter_media",
+                        "phase_tweets_yielded": phase_yield,
+                    }})
+
                 if tweet is not None:
                     return self._update_cursor(None)
 
             state = reset = 3
 
         if state <= 3:
-            # yield unfiltered search results
             self._cursor_prefix = f"3_{tweet_id}/"
             if reset:
                 self._cursor = self._cursor_prefix
 
-            yield from self.api.search_timeline(query)
+            # ll-archive-patch: phase logging + fallback to filter:links
+            # (instead of upstream's fully-unfiltered search). Only fires
+            # when phase 2 returned zero tweets — rare in practice.
+            self.log.info(
+                "phase start: search_filter_links",
+                extra={"json": {
+                    "event": "phase_start",
+                    "phase_name": "search_filter_links",
+                    "phase_max_id": tweet_id,
+                    "phase_reason": "search_filter_media_returned_zero",
+                }})
+            phase_yield = 0
+
+            for tweet in self.api.search_timeline(query + " filter:links"):
+                phase_yield += 1
+                yield tweet
+
+            self.log.info(
+                "phase end: search_filter_links",
+                extra={"json": {
+                    "event": "phase_end",
+                    "phase_name": "search_filter_links",
+                    "phase_tweets_yielded": phase_yield,
+                }})
+
             return self._update_cursor(None)
 
     def _select_tweet_source(self):
